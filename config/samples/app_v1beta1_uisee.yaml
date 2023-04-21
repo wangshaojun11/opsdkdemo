@@ -1,0 +1,11 @@
+apiVersion: app.uisee.com/v1beta1
+kind: Uisee
+metadata:
+  name: uisee-sample
+spec:
+  size: 3 
+  image: nginx:1.7.9 
+  ports:
+  - port: 80
+    targetPort: 80
+    nodePort: 44002

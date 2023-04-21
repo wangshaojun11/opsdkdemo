@@ -1,0 +1,20 @@
+# permissions for end users to view uisees.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: uisee-viewer-role
+rules:
+- apiGroups:
+  - app.uisee.com
+  resources:
+  - uisees
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - app.uisee.com
+  resources:
+  - uisees/status
+  verbs:
+  - get

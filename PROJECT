@@ -1,0 +1,19 @@
+domain: uisee.com
+layout:
+- go.kubebuilder.io/v3
+plugins:
+  manifests.sdk.operatorframework.io/v2: {}
+  scorecard.sdk.operatorframework.io/v2: {}
+projectName: opsdkdemo
+repo: github.com/wangshaojun11/opsdkdemo
+resources:
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: uisee.com
+  group: app
+  kind: Uisee
+  path: github.com/wangshaojun11/opsdkdemo/api/v1beta1
+  version: v1beta1
+version: "3"

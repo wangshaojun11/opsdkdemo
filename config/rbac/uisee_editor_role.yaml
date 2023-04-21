@@ -1,0 +1,24 @@
+# permissions for end users to edit uisees.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: uisee-editor-role
+rules:
+- apiGroups:
+  - app.uisee.com
+  resources:
+  - uisees
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - app.uisee.com
+  resources:
+  - uisees/status
+  verbs:
+  - get
