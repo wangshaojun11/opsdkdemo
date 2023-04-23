@@ -8,6 +8,36 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
+// 实现 Deployment 协调参数
+func MutateDeployment(app *v1beta1.Uisee, deploy *appsv1.Deployment) {
+	labels := map[string]string{"appname": app.Name} //pod 标签
+	selector := &metav1.LabelSelector{               // selector
+		MatchLabels: labels,
+	}
+	deploy.Spec = appsv1.DeploymentSpec{
+		Replicas: app.Spec.Size, //副本数
+		Template: corev1.PodTemplateSpec{ // pod的模板
+			ObjectMeta: metav1.ObjectMeta{
+				Labels: labels, // pod标签
+			},
+			Spec: corev1.PodSpec{ // pod Spec
+				Containers: NewControllers(app),
+			},
+		},
+		Selector: selector, // 标签与上面的lables一致
+	}
+}
+
+// 实现 Service 协调
+func MutateService(app *v1beta1.Uisee, svc *corev1.Service) {
+	svc.Spec = corev1.ServiceSpec{
+		ClusterIP: svc.Spec.ClusterIP,
+		Ports:     app.Spec.Ports,
+		Type:      corev1.ServiceTypeNodePort,
+		Selector:  map[string]string{"appname": app.Name},
+	}
+}
+
 // 实现 newDeploy 方法
 func NewDeploy(app *v1beta1.Uisee) *appsv1.Deployment {
 	labels := map[string]string{"appname": app.Name} //pod 标签
@@ -27,7 +57,7 @@ func NewDeploy(app *v1beta1.Uisee) *appsv1.Deployment {
 			// OwnerReferences  当CRD删掉的时候，把关联的Deploument和Service也要删除。
 			OwnerReferences: makeOwnerReference(app),
 		},
-		// Spec
+
 		Spec: appsv1.DeploymentSpec{
 			Replicas: app.Spec.Size, //副本数
 			Template: corev1.PodTemplateSpec{ // pod的模板

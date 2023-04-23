@@ -18,16 +18,13 @@ package controllers
 
 import (
 	"context"
-	"encoding/json"
-	"reflect"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	appv1beta1 "github.com/wangshaojun11/opsdkdemo/api/v1beta1"
@@ -43,6 +40,8 @@ type UiseeReconciler struct {
 	Scheme *runtime.Scheme
 }
 
+//+kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=app.uisee.com,resources=uisees,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=app.uisee.com,resources=uisees/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=app.uisee.com,resources=uisees/finalizers,verbs=update
@@ -67,7 +66,7 @@ func (r *UiseeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	if err != nil {
 		// 1.2.1 错误不为空说明有错误，进行重试。如果是NotFound说明不存在跳过重试。
 		if client.IgnoreNotFound(err) != nil {
-			return ctrl.Result{}, err
+			return ctrl.Result{}, client.IgnoreNotFound(err)
 		}
 		// 在删除一个不存在的对象的时候，可能会报 NotFound 的错误
 		// 这种情况不需要入队列排队修复。
@@ -79,93 +78,36 @@ func (r *UiseeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		return ctrl.Result{}, nil
 	}
 
-	// 3. 不存在关联资源，应该创建
-	// 存在关联资源，判断是否更新
-	deploy := &appsv1.Deployment{}
-	if err := r.Client.Get(ctx, req.NamespacedName, deploy); err != nil && errors.IsNotFound(err) {
-		// 6. 关联 annotations
-		data, err := json.Marshal(uisee.Spec)
-		if err != nil {
-			return ctrl.Result{}, err
-		}
-		// 6.1 将spec的内容，放到annotation里面
-		if uisee.Annotations != nil {
-			uisee.Annotations[oldSpecAnnotation] = string(data)
-		} else {
-			uisee.Annotations = map[string]string{
-				oldSpecAnnotation: string(data),
-			}
-		}
-		// 6.2 重新更新Uisee
-		if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-			return r.Client.Update(ctx, &uisee)
-		}); err != nil {
-			return ctrl.Result{}, err
-		}
-
-		// 3.1 Deployment 不存在，创建关联资源
-		newDeploy := NewDeploy(&uisee) // NewDeploy 创建CRD Uisee，需要传入 uisee
-		if err := r.Client.Create(ctx, newDeploy); err != nil {
-			return ctrl.Result{}, err
-		}
-
-		// 3.2 创建 Service
-		newService := NewService(&uisee)
-		if err := r.Client.Create(ctx, newService); err != nil {
-			return ctrl.Result{}, err
-		}
-
-		// 3.3 创建成功
-		return ctrl.Result{}, nil
-	}
-
-	// 4. 更新，判断是否需要更新（判断yaml文件是否发生了变化）
-	// 拿现在的 yaml 和 old yaml 对比。从 annotaions 里面获取
-	// 4.1 获取 oldSpecAnnotation
-	oldSpec := appv1beta1.UiseeSpec{}
-	if err := json.Unmarshal([]byte(uisee.Annotations[oldSpecAnnotation]), &oldSpec); err != nil {
-		//获取失败，重试
+	// 7.调协，获取到当前的一个状态，然后和我们期望的状态进行对比。
+	// 7.1 CreateOrUpdate Deployment
+	var deploy appsv1.Deployment
+	deploy.Name = uisee.Name
+	deploy.Namespace = uisee.Namespace
+	or, err := ctrl.CreateOrUpdate(ctx, r.Client, &deploy, func() error {
+		//调协必须在这个函数里面实现
+		MutateDeployment(&uisee, &deploy)
+		return controllerutil.SetControllerReference(&uisee, &deploy, r.Scheme)
+	})
+	if err != nil {
 		return ctrl.Result{}, err
 	}
+	// 日志输出
+	log.Log.Info("CreateOrUpdate", "Deployment", or)
 
-	//4.2 新旧yaml比较，不一致则更新
-	if !reflect.DeepEqual(uisee.Spec, oldSpec) {
-		// 更新关联资源
-		newDeploy := NewDeploy(&uisee)
-		// 查看旧的deploy是否存在
-		oldDeploy := &appsv1.Deployment{}
-		if err := r.Client.Get(ctx, req.NamespacedName, oldDeploy); err != nil {
-			// 则进行重试
-			return ctrl.Result{}, err
-		}
-		// 更新是替换旧的spec
-		oldDeploy.Spec = newDeploy.Spec
-		// 直接更新oldDeploy
-		// 注意：一般情况不会直接调用update更新， r.Client.Update(ctx, oldDeploy)
-		// 		因为 deploy 对象很有可能在其他控制器也在watch，会导致版本不一致。
-		if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-			return r.Client.Update(ctx, oldDeploy)
-		}); err != nil {
-			return ctrl.Result{}, err
-		}
-	}
-
-	// 5. 更新 Service
-	// 获取 service
-	newService := NewService(&uisee)
-	oldService := &corev1.Service{}
-	if err := r.Client.Get(ctx, req.NamespacedName, oldService); err != err {
-		// 获取service失败，需要重试
+	// 7.2 CreateOrUpdate Service
+	var svc corev1.Service
+	svc.Name = uisee.Name
+	svc.Namespace = uisee.Namespace
+	or, err = ctrl.CreateOrUpdate(ctx, r.Client, &svc, func() error {
+		//调协必须在这个函数里面实现
+		MutateService(&uisee, &svc)
+		return controllerutil.SetControllerReference(&uisee, &svc, r.Scheme)
+	})
+	if err != nil {
 		return ctrl.Result{}, err
 	}
-	// 更新则是在旧的yaml中替换
-	oldService.Spec = newService.Spec
-	//更新oldSe  rvice
-	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		return r.Client.Update(ctx, oldService)
-	}); err != nil {
-		return ctrl.Result{}, err
-	}
+	// 日志输出
+	log.Log.Info("CreateOrUpdate", "Service", or)
 
 	return ctrl.Result{}, nil
 }
@@ -174,5 +116,7 @@ func (r *UiseeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 func (r *UiseeReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&appv1beta1.Uisee{}).
+		Owns(&appsv1.Deployment{}).
+		Owns(&corev1.Service{}).
 		Complete(r)
 }
